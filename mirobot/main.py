@@ -15,66 +15,35 @@ except ImportError:
     cv2 = None
     np = None
 
+    """정말로 느리게 속도를 조절해서 이동하고 있는 좌표가 맞는지 확인하는 프로그램 만들기, 매번 같은 좌표인지 확인하는 것도"""
 
-# ============================================================
-# 로봇 연결 설정
-# ============================================================
+
 SERIAL_PORT = "COM3"
 BAUD_RATE = 115200
 ROBOT_ADDRESS = -1
 ROBOT_SPEED = 2000
-
-
-# ============================================================
-# 화면(미리보기) 영역
-# ============================================================
 CANVAS_WIDTH = 500
 CANVAS_HEIGHT = 500
 CANVAS_MARGIN = 20
+RULER_LEFT_WIDTH = 48
+RULER_BOTTOM_HEIGHT = 38
+RULER_CM_COUNT = 10
 
-
-# ============================================================
-# 실제 로봇 그림 영역
-#
-# 왼쪽 아래  : X=270, Y=-100
-# 오른쪽 아래: X=270, Y=0
-# 오른쪽 위  : X=170, Y=0
-# 왼쪽 위    : X=170, Y=-100
-#
-# X 범위: 170 ~ 270 = 100 mm
-# Y 범위: -100 ~ 0  = 100 mm
-# ============================================================
 ROBOT_X_MIN = 170.0
 ROBOT_X_MAX = 270.0
 ROBOT_Y_MIN = -100.0
 ROBOT_Y_MAX = 0.0
-
-
-# ============================================================
-# 펜 높이 - 실제 종이 높이에 맞게 조정
-# ============================================================
 PEN_UP_Z = 126.0
 PEN_DOWN_Z = 125.0
+ROBOT_RX = 0.0
+ROBOT_RY = 0.0
+ROBOT_RZ = 0.0
 
-
-# ============================================================
-# 로봇 자세
-# ============================================================
-ROBOT_A = 0.0
-ROBOT_B = 0.0
-ROBOT_C = 0.0
-
-
-# ============================================================
-# 경로/명령 설정
-# ============================================================
 MIN_PIXEL_DISTANCE = 5
 COMMAND_INTERVAL = 0.12
-
-# 사진 윤곽선 추출 설정
 CANNY_LOW = 60
 CANNY_HIGH = 160
-# 사진의 작은 잡음/세부 묘사를 줄여 로봇이 단순한 선만 따라가도록 설정
+
 MIN_CONTOUR_LENGTH = 80.0
 CONTOUR_APPROX_RATIO = 0.012
 MIN_IMAGE_POINT_DISTANCE = 6.0
@@ -101,15 +70,11 @@ class DrawingRobotApp:
         self.last_mouse_point = None
         self.loaded_image_path = None
 
-        # 실행 중 현재 명령 위치 표시용
         self.live_marker_id = None
         self.live_prev_canvas_point = None
 
         self.create_widgets()
 
-    # ========================================================
-    # GUI
-    # ========================================================
     def create_widgets(self):
         connection_frame = tk.Frame(self.root)
         connection_frame.pack(padx=10, pady=(10, 3), fill="x")
@@ -204,8 +169,21 @@ class DrawingRobotApp:
         )
         self.info_label.pack(padx=10, pady=(0, 5), fill="x")
 
+        # 그림 영역 + cm 눈금
+        canvas_area = tk.Frame(self.root)
+        canvas_area.pack(padx=10, pady=10)
+
+        self.left_ruler = tk.Canvas(
+            canvas_area,
+            width=RULER_LEFT_WIDTH,
+            height=CANVAS_HEIGHT,
+            bg=self.root.cget("bg"),
+            highlightthickness=0,
+        )
+        self.left_ruler.grid(row=0, column=0, sticky="ns")
+
         self.canvas = tk.Canvas(
-            self.root,
+            canvas_area,
             width=CANVAS_WIDTH,
             height=CANVAS_HEIGHT,
             bg="white",
@@ -213,7 +191,25 @@ class DrawingRobotApp:
             highlightthickness=2,
             highlightbackground="black",
         )
-        self.canvas.pack(padx=10, pady=10)
+        self.canvas.grid(row=0, column=1)
+
+        # 왼쪽 아래 빈 공간
+        tk.Frame(
+            canvas_area,
+            width=RULER_LEFT_WIDTH,
+            height=RULER_BOTTOM_HEIGHT,
+        ).grid(row=1, column=0)
+
+        self.bottom_ruler = tk.Canvas(
+            canvas_area,
+            width=CANVAS_WIDTH,
+            height=RULER_BOTTOM_HEIGHT,
+            bg=self.root.cget("bg"),
+            highlightthickness=0,
+        )
+        self.bottom_ruler.grid(row=1, column=1, sticky="ew")
+
+        self.draw_rulers()
 
         self.canvas.bind("<ButtonPress-1>", self.mouse_press)
         self.canvas.bind("<B1-Motion>", self.mouse_drag)
@@ -222,31 +218,66 @@ class DrawingRobotApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.close_program)
 
-    # ========================================================
-    # 화면 좌표 -> 로봇 좌표
-    # ========================================================
+    def draw_rulers(self):
+        """100 mm x 100 mm 작업영역을 0~10 cm 눈금으로 표시합니다."""
+        self.left_ruler.delete("all")
+        self.bottom_ruler.delete("all")
+
+        # 아래쪽 눈금: 캔버스 왼쪽 -> 오른쪽 = 0 -> 10 cm
+        for cm in range(RULER_CM_COUNT + 1):
+            x = (cm / RULER_CM_COUNT) * CANVAS_WIDTH
+            self.bottom_ruler.create_line(x, 0, x, 9, width=1)
+            self.bottom_ruler.create_text(
+                x, 20, text=str(cm), anchor="n", font=("Arial", 9)
+            )
+
+        self.bottom_ruler.create_text(
+            CANVAS_WIDTH / 2,
+            RULER_BOTTOM_HEIGHT - 2,
+            text="cm",
+            anchor="s",
+            font=("Arial", 9),
+        )
+
+        # 왼쪽 눈금: 캔버스 위 -> 아래 = 0 -> 10 cm
+        for cm in range(RULER_CM_COUNT + 1):
+            y = (cm / RULER_CM_COUNT) * CANVAS_HEIGHT
+            self.left_ruler.create_line(
+                RULER_LEFT_WIDTH - 9, y, RULER_LEFT_WIDTH, y, width=1
+            )
+            self.left_ruler.create_text(
+                RULER_LEFT_WIDTH - 13,
+                y,
+                text=str(cm),
+                anchor="e",
+                font=("Arial", 9),
+            )
+
+        self.left_ruler.create_text(
+            8,
+            CANVAS_HEIGHT / 2,
+            text="cm",
+            angle=90,
+            font=("Arial", 9),
+        )
+
     def canvas_to_robot(self, canvas_x, canvas_y):
         canvas_x = max(0.0, min(float(CANVAS_WIDTH), float(canvas_x)))
         canvas_y = max(0.0, min(float(CANVAS_HEIGHT), float(canvas_y)))
 
-        # 화면 위->아래가 로봇 X: 170 -> 270
         robot_x = ROBOT_X_MIN + (canvas_y / CANVAS_HEIGHT) * (
             ROBOT_X_MAX - ROBOT_X_MIN
         )
-
-        # 화면 왼쪽->오른쪽이 로봇 Y: -100 -> 0
         robot_y = ROBOT_Y_MIN + (canvas_x / CANVAS_WIDTH) * (
             ROBOT_Y_MAX - ROBOT_Y_MIN
         )
 
-        # 마지막 안전 클램프: 작업영역 밖으로 절대 나가지 않게 함
         robot_x = max(ROBOT_X_MIN, min(ROBOT_X_MAX, robot_x))
         robot_y = max(ROBOT_Y_MIN, min(ROBOT_Y_MAX, robot_y))
 
         return robot_x, robot_y
 
     def robot_to_canvas(self, robot_x, robot_y):
-        """로봇 XY 좌표를 캔버스 좌표로 역변환합니다."""
         robot_x = max(ROBOT_X_MIN, min(ROBOT_X_MAX, float(robot_x)))
         robot_y = max(ROBOT_Y_MIN, min(ROBOT_Y_MAX, float(robot_y)))
 
@@ -254,9 +285,7 @@ class DrawingRobotApp:
         canvas_x = (robot_y - ROBOT_Y_MIN) / (ROBOT_Y_MAX - ROBOT_Y_MIN) * CANVAS_WIDTH
         return canvas_x, canvas_y
 
-    # ========================================================
-    # 사진 -> 윤곽선 -> stroke 좌표
-    # ========================================================
+
     def load_image(self):
         if self.robot_running:
             self.show_running_warning()
@@ -318,14 +347,11 @@ class DrawingRobotApp:
 
     @staticmethod
     def read_image_unicode(path):
-        # cv2.imread는 Windows 한글 경로에서 실패하는 경우가 있어서 imdecode 사용
         data = np.fromfile(path, dtype=np.uint8)
         return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
     def image_to_strokes(self, image):
         h, w = image.shape[:2]
-
-        # 너무 큰 사진은 윤곽선 추출 전에 축소
         max_side = max(h, w)
         if max_side > 1200:
             scale = 1200.0 / max_side
@@ -340,7 +366,6 @@ class DrawingRobotApp:
 
         edges = cv2.Canny(gray, CANNY_LOW, CANNY_HIGH)
 
-        # 끊어진 윤곽선을 약간 연결
         kernel = np.ones((2, 2), np.uint8)
         edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
 
@@ -365,7 +390,6 @@ class DrawingRobotApp:
             pts = [(float(p[0][0]), float(p[0][1])) for p in approx]
             candidates.append((length, pts))
 
-        # 긴 윤곽선을 우선 사용해서 사진 잡음을 줄임
         candidates.sort(key=lambda item: item[0], reverse=True)
         candidates = candidates[:MAX_CONTOURS]
 
@@ -374,7 +398,6 @@ class DrawingRobotApp:
 
         raw_strokes = [pts for _, pts in candidates]
 
-        # 전체 bounding box를 기준으로 비율 유지 + 중앙 정렬
         all_points = [p for stroke in raw_strokes for p in stroke]
         min_x = min(p[0] for p in all_points)
         max_x = max(p[0] for p in all_points)
@@ -403,8 +426,6 @@ class DrawingRobotApp:
             for x, y in stroke:
                 cx = offset_x + (x - min_x) * scale
                 cy = offset_y + (y - min_y) * scale
-
-                # 캔버스 내부로 안전하게 제한
                 cx = max(0.0, min(float(CANVAS_WIDTH), cx))
                 cy = max(0.0, min(float(CANVAS_HEIGHT), cy))
 
@@ -422,7 +443,6 @@ class DrawingRobotApp:
             if total_points >= MAX_TOTAL_POINTS:
                 break
 
-        # 펜을 든 채 이동하는 거리를 줄이도록 선 순서/방향 정리
         return self.optimize_stroke_order(scaled_strokes)
 
     @staticmethod
@@ -494,9 +514,6 @@ class DrawingRobotApp:
                 joinstyle=tk.ROUND,
             )
 
-    # ========================================================
-    # 좌표 TXT 저장
-    # ========================================================
     def save_robot_coordinates(self):
         if not self.strokes:
             messagebox.showwarning("좌표 없음", "먼저 사진을 불러오거나 그림을 그리세요.")
@@ -531,9 +548,6 @@ class DrawingRobotApp:
         except Exception as error:
             messagebox.showerror("저장 오류", str(error))
 
-    # ========================================================
-    # 마우스 그림 저장
-    # ========================================================
     def mouse_press(self, event):
         if self.robot_running:
             return
@@ -615,8 +629,8 @@ class DrawingRobotApp:
 
     def update_live_position(self, x, y, z, drawing=False):
         """
-        현재 로봇에 보낸 명령 좌표를 GUI에 표시합니다.
-        실제 엔코더 피드백이 아니라, 현재 전송된 목표 좌표입니다.
+        로봇에 전송한 목표 좌표를 명령 대기 후 GUI에 표시합니다.
+        실제 엔코더 피드백이 아니라 목표 좌표 기반의 근사 표시입니다.
         """
         def _update():
             self.coordinate_label.config(
@@ -626,7 +640,6 @@ class DrawingRobotApp:
 
             cx, cy = self.robot_to_canvas(x, y)
 
-            # 펜이 내려가 실제 그림을 그리는 구간은 지나온 부분을 빨간색으로 표시
             if drawing and self.live_prev_canvas_point is not None:
                 px, py = self.live_prev_canvas_point
                 self.canvas.create_line(
@@ -640,7 +653,6 @@ class DrawingRobotApp:
 
             self.live_prev_canvas_point = (cx, cy)
 
-            # 현재 위치 빨간 점
             if self.live_marker_id is not None:
                 try:
                     self.canvas.delete(self.live_marker_id)
@@ -688,9 +700,6 @@ class DrawingRobotApp:
         )
         self.set_status("화면과 저장된 그림을 지웠습니다.")
 
-    # ========================================================
-    # 로봇 연결
-    # ========================================================
     def connect_robot(self):
         if self.connected:
             messagebox.showinfo("연결 상태", "이미 로봇이 연결되어 있습니다.")
@@ -725,9 +734,6 @@ class DrawingRobotApp:
             messagebox.showerror("연결 실패", str(error))
             self.set_status("로봇 연결 실패")
 
-    # ========================================================
-    # Homing / Zero
-    # ========================================================
     def start_homing(self):
         if not self.check_robot():
             return
@@ -770,14 +776,11 @@ class DrawingRobotApp:
         finally:
             self.robot_running = False
 
-    # ========================================================
-    # 로봇 이동
-    # ========================================================
+
     def move_robot(self, x, y, z, linear=True):
         if self.stop_requested:
             return
 
-        # 작업영역 이탈 방지
         x = max(ROBOT_X_MIN, min(ROBOT_X_MAX, float(x)))
         y = max(ROBOT_Y_MIN, min(ROBOT_Y_MAX, float(y)))
 
@@ -790,16 +793,15 @@ class DrawingRobotApp:
             round(x, 2),
             round(y, 2),
             round(z, 2),
-            ROBOT_A,
-            ROBOT_B,
-            ROBOT_C,
+            ROBOT_RX,
+            ROBOT_RY,
+            ROBOT_RZ,
         )
 
-        # 현재 전송된 목표 좌표를 실시간 표시
         drawing = linear and (float(z) <= PEN_DOWN_Z + 0.01)
-        self.update_live_position(x, y, z, drawing=drawing)
 
         time.sleep(COMMAND_INTERVAL)
+        self.update_live_position(x, y, z, drawing=drawing)
 
     def pen_up(self, x, y):
         self.live_prev_canvas_point = None
@@ -808,9 +810,7 @@ class DrawingRobotApp:
     def pen_down(self, x, y):
         self.move_robot(x=x, y=y, z=PEN_DOWN_Z, linear=True)
 
-    # ========================================================
-    # 이동 테스트
-    # ========================================================
+
     def start_move_test(self):
         if not self.check_robot():
             return
