@@ -4,18 +4,13 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
+import cv2
+import pyrealsense2 as rs
+from ultralytics import YOLO
 
 import serial
 import wlkatapython
-
-try:
-    import cv2
-    import numpy as np
-except ImportError:
-    cv2 = None
-    np = None
-
-    """정말로 느리게 속도를 조절해서 이동하고 있는 좌표가 맞는지 확인하는 프로그램 만들기, 매번 같은 좌표인지 확인하는 것도"""
+import numpy as np
 
 
 SERIAL_PORT = "COM3"
@@ -38,23 +33,22 @@ PEN_DOWN_Z = 125.0
 ROBOT_RX = 0.0
 ROBOT_RY = 0.0
 ROBOT_RZ = 0.0
-
 MIN_PIXEL_DISTANCE = 5
-COMMAND_INTERVAL = 0.12
+MEASUREMENT_INTERVAL = 0.08
+
 CANNY_LOW = 60
 CANNY_HIGH = 160
-
 MIN_CONTOUR_LENGTH = 80.0
 CONTOUR_APPROX_RATIO = 0.012
 MIN_IMAGE_POINT_DISTANCE = 6.0
 MAX_CONTOURS = 100
 MAX_TOTAL_POINTS = 1500
+SAVE_FILENAME = "C:/Users/SAMSUNG/OneDrive/바탕 화면/로봇/참고자료/captured_target.jpg"
 
 
 class DrawingRobotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("WLKATA 사진/마우스 드로잉 로봇")
         self.root.resizable(False, False)
 
         self.serial1 = None
@@ -88,14 +82,14 @@ class DrawingRobotApp:
 
         tk.Button(
             connection_frame,
-            text="Homing",
+            text="호밍",
             width=10,
             command=self.start_homing,
         ).pack(side="left", padx=3)
 
         tk.Button(
             connection_frame,
-            text="Zero Position",
+            text="제로 위치",
             width=13,
             command=self.start_zero,
         ).pack(side="left", padx=3)
@@ -129,16 +123,23 @@ class DrawingRobotApp:
 
         tk.Button(
             robot_frame,
-            text="좌표 이동 테스트",
+            text="중앙 이동",
             width=14,
             command=self.start_move_test,
         ).pack(side="left", padx=3)
 
         tk.Button(
             robot_frame,
-            text="로봇으로 그리기",
+            text="드로잉",
             width=14,
             command=self.start_robot_drawing,
+        ).pack(side="left", padx=3)
+
+        tk.Button(
+            robot_frame,
+            text="좌표 측정 모드",
+            width=14,
+            command=self.start_measurement_drawing,
         ).pack(side="left", padx=3)
 
         tk.Button(
@@ -147,6 +148,13 @@ class DrawingRobotApp:
             width=10,
             command=self.stop_robot,
         ).pack(side="left", padx=3)
+
+        tk.Button(
+                    image_frame,
+                    text="YOLO 세그메테이션",
+                    width=14,
+                    command=self.mode_live_capture,
+                ).pack(side="left", padx=3)
 
         self.status_label = tk.Label(
             self.root,
@@ -157,7 +165,7 @@ class DrawingRobotApp:
 
         self.coordinate_label = tk.Label(
             self.root,
-            text="로봇 좌표: X=170.00, Y=-100.00, Z=--",
+            text="좌표: X=170.00, Y=-100.00, Z=--",
             anchor="w",
         )
         self.coordinate_label.pack(padx=10, pady=(2, 5), fill="x")
@@ -169,7 +177,6 @@ class DrawingRobotApp:
         )
         self.info_label.pack(padx=10, pady=(0, 5), fill="x")
 
-        # 그림 영역 + cm 눈금
         canvas_area = tk.Frame(self.root)
         canvas_area.pack(padx=10, pady=10)
 
@@ -188,12 +195,10 @@ class DrawingRobotApp:
             height=CANVAS_HEIGHT,
             bg="white",
             cursor="crosshair",
-            highlightthickness=2,
-            highlightbackground="black",
+            highlightthickness=0,
         )
         self.canvas.grid(row=0, column=1)
 
-        # 왼쪽 아래 빈 공간
         tk.Frame(
             canvas_area,
             width=RULER_LEFT_WIDTH,
@@ -219,37 +224,62 @@ class DrawingRobotApp:
         self.root.protocol("WM_DELETE_WINDOW", self.close_program)
 
     def draw_rulers(self):
-        """100 mm x 100 mm 작업영역을 0~10 cm 눈금으로 표시합니다."""
         self.left_ruler.delete("all")
         self.bottom_ruler.delete("all")
 
-        # 아래쪽 눈금: 캔버스 왼쪽 -> 오른쪽 = 0 -> 10 cm
         for cm in range(RULER_CM_COUNT + 1):
             x = (cm / RULER_CM_COUNT) * CANVAS_WIDTH
-            self.bottom_ruler.create_line(x, 0, x, 9, width=1)
+
+            tick_x = min(x, CANVAS_WIDTH - 1)
+            self.bottom_ruler.create_line(tick_x, 0, tick_x, 9, width=1)
+
+            if cm == 0:
+                text_x = 1
+                anchor = "nw"
+            elif cm == RULER_CM_COUNT:
+                text_x = CANVAS_WIDTH - 1
+                anchor = "ne"
+            else:
+                text_x = x
+                anchor = "n"
+
             self.bottom_ruler.create_text(
-                x, 20, text=str(cm), anchor="n", font=("Arial", 9)
+                text_x, 14, text=str(cm), anchor=anchor, font=("Arial", 9)
             )
 
         self.bottom_ruler.create_text(
             CANVAS_WIDTH / 2,
-            RULER_BOTTOM_HEIGHT - 2,
+            RULER_BOTTOM_HEIGHT - 1,
             text="cm",
             anchor="s",
             font=("Arial", 9),
         )
 
-        # 왼쪽 눈금: 캔버스 위 -> 아래 = 0 -> 10 cm
         for cm in range(RULER_CM_COUNT + 1):
-            y = (cm / RULER_CM_COUNT) * CANVAS_HEIGHT
+            y = CANVAS_HEIGHT - (cm / RULER_CM_COUNT) * CANVAS_HEIGHT
+
+
+            tick_y = max(0, min(CANVAS_HEIGHT - 1, y))
             self.left_ruler.create_line(
-                RULER_LEFT_WIDTH - 9, y, RULER_LEFT_WIDTH, y, width=1
+                RULER_LEFT_WIDTH - 9, tick_y, RULER_LEFT_WIDTH - 1, tick_y, width=1
             )
+
+
+            if cm == RULER_CM_COUNT:
+                text_y = 1
+                anchor = "ne"
+            elif cm == 0:
+                text_y = CANVAS_HEIGHT - 1
+                anchor = "se"
+            else:
+                text_y = y
+                anchor = "e"
+
             self.left_ruler.create_text(
                 RULER_LEFT_WIDTH - 13,
-                y,
+                text_y,
                 text=str(cm),
-                anchor="e",
+                anchor=anchor,
                 font=("Arial", 9),
             )
 
@@ -260,6 +290,7 @@ class DrawingRobotApp:
             angle=90,
             font=("Arial", 9),
         )
+
 
     def canvas_to_robot(self, canvas_x, canvas_y):
         canvas_x = max(0.0, min(float(CANVAS_WIDTH), float(canvas_x)))
@@ -624,17 +655,13 @@ class DrawingRobotApp:
     def mouse_move(self, event):
         robot_x, robot_y = self.canvas_to_robot(event.x, event.y)
         self.coordinate_label.config(
-            text=f"로봇 좌표: X={robot_x:.2f}, Y={robot_y:.2f}"
+            text=f"마우스 좌표: X={robot_x:.2f}, Y={robot_y:.2f}"
         )
 
     def update_live_position(self, x, y, z, drawing=False):
-        """
-        로봇에 전송한 목표 좌표를 명령 대기 후 GUI에 표시합니다.
-        실제 엔코더 피드백이 아니라 목표 좌표 기반의 근사 표시입니다.
-        """
         def _update():
             self.coordinate_label.config(
-                text=(f"현재 이동 좌표: X={x:.2f}, Y={y:.2f}, Z={z:.2f}"),
+                text=(f"명령 좌표: X={x:.2f}, Y={y:.2f}, Z={z:.2f}"),
                 fg="red",
             )
 
@@ -799,8 +826,6 @@ class DrawingRobotApp:
         )
 
         drawing = linear and (float(z) <= PEN_DOWN_Z + 0.01)
-
-        time.sleep(COMMAND_INTERVAL)
         self.update_live_position(x, y, z, drawing=drawing)
 
     def pen_up(self, x, y):
@@ -884,17 +909,14 @@ class DrawingRobotApp:
                     f"{stroke_index}/{total_strokes}번째 선 시작점으로 이동 중..."
                 )
 
-                # 1. 펜을 든 채 시작점으로 이동
                 self.pen_up(first_robot_x, first_robot_y)
                 if self.stop_requested:
                     break
 
-                # 2. 시작점에서 펜 내림
                 self.pen_down(first_robot_x, first_robot_y)
                 if self.stop_requested:
                     break
 
-                # 3. 윤곽선 좌표를 순서대로 따라감
                 for canvas_x, canvas_y in stroke[1:]:
                     if self.stop_requested:
                         break
@@ -913,7 +935,6 @@ class DrawingRobotApp:
                         f"선 {stroke_index}/{total_strokes}"
                     )
 
-                # 4. 선이 끝나면 펜 올림
                 last_canvas_x, last_canvas_y = stroke[-1]
                 last_robot_x, last_robot_y = self.canvas_to_robot(
                     last_canvas_x,
@@ -931,6 +952,197 @@ class DrawingRobotApp:
         finally:
             self.robot_running = False
             self.reset_live_position()
+
+
+    def move_robot_measurement(self, x, y, z, log_file, start_time, linear=True):
+        if self.stop_requested:
+            return
+
+        x = max(ROBOT_X_MIN, min(ROBOT_X_MAX, float(x)))
+        y = max(ROBOT_Y_MIN, min(ROBOT_Y_MAX, float(y)))
+
+        motion = 1 if linear else 0
+        position = 0
+
+        self.mirobot1.writecoordinate(
+            motion,
+            position,
+            round(x, 2),
+            round(y, 2),
+            round(z, 2),
+            ROBOT_RX,
+            ROBOT_RY,
+            ROBOT_RZ,
+        )
+
+        time.sleep(MEASUREMENT_INTERVAL)
+
+        current_x = float(self.mirobot1.getcoordinate(1))
+        current_y = float(self.mirobot1.getcoordinate(2))
+        current_z = float(self.mirobot1.getcoordinate(3))
+
+        error_x = x - current_x
+        error_y = y - current_y
+        error_z = z - current_z
+        elapsed = time.monotonic() - start_time
+
+        log_file.write(
+            f"{elapsed:.3f}\t{x:.3f}\t{y:.3f}\t{z:.3f}\t"
+            f"{current_x:.3f}\t{current_y:.3f}\t{current_z:.3f}\t"
+            f"{error_x:.3f}\t{error_y:.3f}\t{error_z:.3f}\n"
+        )
+        log_file.flush()
+
+        drawing = linear and (float(z) <= PEN_DOWN_Z + 0.01)
+        self.update_measurement_position(current_x, current_y, current_z, drawing=drawing)
+
+    def update_measurement_position(self, x, y, z, drawing=False):
+        def _update():
+            self.coordinate_label.config(
+                text=f"현재 좌표: X={x:.2f}, Y={y:.2f}, Z={z:.2f}",
+                fg="blue",
+            )
+
+            cx, cy = self.robot_to_canvas(x, y)
+
+            if drawing and self.live_prev_canvas_point is not None:
+                px, py = self.live_prev_canvas_point
+                self.canvas.create_line(
+                    px, py, cx, cy,
+                    width=4,
+                    fill="blue",
+                    capstyle=tk.ROUND,
+                    joinstyle=tk.ROUND,
+                    tags=("live_progress",),
+                )
+
+            self.live_prev_canvas_point = (cx, cy)
+
+            if self.live_marker_id is not None:
+                try:
+                    self.canvas.delete(self.live_marker_id)
+                except Exception:
+                    pass
+
+            r = 6
+            self.live_marker_id = self.canvas.create_oval(
+                cx-r, cy-r, cx+r, cy+r,
+                fill="blue",
+                outline="white",
+                width=2,
+                tags=("live_marker",),
+            )
+            self.canvas.tag_raise(self.live_marker_id)
+
+        self.root.after(0, _update)
+
+    def start_measurement_drawing(self):
+        if not self.check_robot():
+            return
+        if self.robot_running:
+            self.show_running_warning()
+            return
+        if not self.strokes:
+            messagebox.showwarning(
+                "그림 없음",
+                "먼저 사진을 불러오거나 흰색 영역에 마우스로 그림을 그리세요.",
+            )
+            return
+
+        threading.Thread(target=self.measurement_drawing_worker, daemon=True).start()
+
+    def measurement_drawing_worker(self):
+        log_path = None
+        try:
+            self.robot_running = True
+            self.stop_requested = False
+            self.reset_live_position()
+
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            filename = time.strftime("coordinate_measurement_%Y%m%d_%H%M%S.txt")
+            log_path = os.path.join(base_dir, filename)
+
+            strokes_copy = [stroke.copy() for stroke in self.strokes]
+            total_strokes = len(strokes_copy)
+            total_points = sum(len(stroke) for stroke in strokes_copy)
+            completed_points = 0
+            start_time = time.monotonic()
+
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                log_file.write(
+                    "time_s\ttarget_X\ttarget_Y\ttarget_Z\t"
+                    "current_X\tcurrent_Y\tcurrent_Z\t"
+                    "error_X\terror_Y\terror_Z\n"
+                )
+
+                for stroke_index, stroke in enumerate(strokes_copy, start=1):
+                    if self.stop_requested:
+                        break
+                    if not stroke:
+                        continue
+
+                    first_canvas_x, first_canvas_y = stroke[0]
+                    first_robot_x, first_robot_y = self.canvas_to_robot(
+                        first_canvas_x,
+                        first_canvas_y,
+                    )
+
+                    self.set_status(
+                        f"좌표 측정 중: {stroke_index}/{total_strokes}번째 선 시작점 이동"
+                    )
+
+                    self.live_prev_canvas_point = None
+                    self.move_robot_measurement(
+                        first_robot_x, first_robot_y, PEN_UP_Z,
+                        log_file, start_time, linear=False
+                    )
+                    if self.stop_requested:
+                        break
+
+                    self.move_robot_measurement(
+                        first_robot_x, first_robot_y, PEN_DOWN_Z,
+                        log_file, start_time, linear=True
+                    )
+                    if self.stop_requested:
+                        break
+
+                    for canvas_x, canvas_y in stroke[1:]:
+                        if self.stop_requested:
+                            break
+
+                        robot_x, robot_y = self.canvas_to_robot(canvas_x, canvas_y)
+                        self.move_robot_measurement(
+                            robot_x, robot_y, PEN_DOWN_Z,
+                            log_file, start_time, linear=True
+                        )
+
+                        completed_points += 1
+                        self.set_status(
+                            f"좌표 측정 중: {completed_points}/{total_points} | "
+                            f"선 {stroke_index}/{total_strokes}"
+                        )
+
+                    last_canvas_x, last_canvas_y = stroke[-1]
+                    last_robot_x, last_robot_y = self.canvas_to_robot(
+                        last_canvas_x,
+                        last_canvas_y,
+                    )
+                    self.move_robot_measurement(
+                        last_robot_x, last_robot_y, PEN_UP_Z,
+                        log_file, start_time, linear=False
+                    )
+
+            if self.stop_requested:
+                self.set_status(f"좌표 측정 중지됨")
+            else:
+                self.set_status(f"좌표 측정 완료")
+
+        except Exception as error:
+            self.show_error("좌표 측정 오류", error)
+        finally:
+            self.robot_running = False
+            self.reset_live_position()
+
 
     def stop_robot(self):
         self.stop_requested = True
@@ -990,6 +1202,111 @@ class DrawingRobotApp:
 
         self.root.destroy()
 
+    
+
+    def mode_live_capture(self):
+        pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        pipeline.start(config)
+        time.sleep(1)
+
+        for _ in range(5): frames = pipeline.wait_for_frames()
+    
+        color_frame = frames.get_color_frame()
+        if color_frame:
+            test_image = np.asanyarray(color_frame.get_data())
+            h, w = test_image.shape[:2]
+            if w != 640 or h != 480: print("설정된 해상도가 640x480과 다릅니다")
+
+
+        try:
+            while True:
+                frames = pipeline.wait_for_frames()
+                color_frame = frames.get_color_frame()
+                if not color_frame: continue
+            
+                color_image = np.asanyarray(color_frame.get_data())
+                paths = extract_paths_from_image(color_image)
+                display_img = color_image.copy()
+            
+                for path in paths:
+                    pts = np.array(path, np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(display_img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
+                
+                cv2.putText(display_img, "Press ENTER to Save, ESC to Exit", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.imshow("Live Capture Mode", display_img)
+
+                key = cv2.waitKey(1)
+                if key == 13:
+                    if not paths:
+                        print("추출된 윤곽선이 없습니다.")
+                        continue
+
+                    strokes = []
+
+                    for path in paths:
+                        stroke = []
+
+                        for x, y in path:
+                            canvas_x = (x / 640.0) * CANVAS_WIDTH
+                            canvas_y = (y / 480.0) * CANVAS_HEIGHT
+                            stroke.append((canvas_x, canvas_y))
+
+                        if len(stroke) >= 2:
+                            strokes.append(stroke)
+
+                    self.strokes = strokes
+
+
+                    self.redraw_strokes()
+
+                    total_points = sum(
+                        len(stroke) for stroke in self.strokes
+                    )
+
+                    self.info_label.config(
+                        text=(
+                            f"YOLO 세그멘테이션 | "
+                            f"선 {len(self.strokes)}개 | "
+                            f"좌표 {total_points}개"
+                        )
+                    )
+
+                    self.set_status(
+                        f"YOLO 윤곽선 저장 완료: "
+                        f"{len(self.strokes)}개 선, "
+                        f"{total_points}개 좌표"
+                    )
+
+                    cv2.imwrite(SAVE_FILENAME, color_image)
+                    break
+
+                elif key == 27: break
+        finally:
+            pipeline.stop()
+            cv2.destroyAllWindows()
+
+def extract_paths_from_image(image, conf=0.1, epsilon=2.0):
+    model = YOLO("yolov8n-seg.pt")
+    results = model(image, conf=conf, verbose=False)
+    
+    all_paths = []
+    if results[0].masks is not None:
+        masks = results[0].masks.data.cpu().numpy()
+        for mask in masks:
+            mask = (mask * 255).astype(np.uint8)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            for cnt in contours:
+                approx = cv2.approxPolyDP(cnt, epsilon, True)
+                path = []
+                for point in approx:
+                    x, y = float(point[0][0]), float(point[0][1])
+                    path.append((x, y))
+                all_paths.append(path)
+    return all_paths
+    
 
 def main():
     root = tk.Tk()
