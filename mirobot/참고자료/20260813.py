@@ -10,40 +10,45 @@ from ultralytics import YOLO
 
 import serial
 import wlkatapython
-import numpy as np
+
+try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = None
+    np = None
 
 
 SERIAL_PORT = "COM3"
 BAUD_RATE = 115200
 ROBOT_ADDRESS = -1
 ROBOT_SPEED = 2000
-CANVAS_WIDTH = 640
-CANVAS_HEIGHT = 480
+CANVAS_WIDTH = 500
+CANVAS_HEIGHT = 500
 CANVAS_MARGIN = 20
 RULER_LEFT_WIDTH = 48
 RULER_BOTTOM_HEIGHT = 38
 RULER_CM_COUNT = 10
 
 ROBOT_X_MIN = 170.0
-ROBOT_X_MAX = 245.0
+ROBOT_X_MAX = 270.0
 ROBOT_Y_MIN = -100.0
 ROBOT_Y_MAX = 0.0
-PEN_UP_Z = 127.5
+PEN_UP_Z = 126.0
 PEN_DOWN_Z = 125.0
 ROBOT_RX = 0.0
 ROBOT_RY = 0.0
 ROBOT_RZ = 0.0
-MIN_PIXEL_DISTANCE = 6
+MIN_PIXEL_DISTANCE = 5
 MEASUREMENT_INTERVAL = 0.08
 
 CANNY_LOW = 60
 CANNY_HIGH = 160
 MIN_CONTOUR_LENGTH = 80.0
-CONTOUR_APPROX_RATIO = 0.020
+CONTOUR_APPROX_RATIO = 0.012
 MIN_IMAGE_POINT_DISTANCE = 6.0
 MAX_CONTOURS = 100
 MAX_TOTAL_POINTS = 1500
-SAVE_FILENAME = "C:/Users/SAMSUNG/OneDrive/바탕 화면/로봇/참고자료/captured_target.jpg"
 
 
 class DrawingRobotApp:
@@ -123,7 +128,7 @@ class DrawingRobotApp:
 
         tk.Button(
             robot_frame,
-            text="중앙 이동",
+            text="좌표 이동 테스트",
             width=14,
             command=self.start_move_test,
         ).pack(side="left", padx=3)
@@ -150,11 +155,11 @@ class DrawingRobotApp:
         ).pack(side="left", padx=3)
 
         tk.Button(
-            image_frame,
-            text="YOLO 세그메테이션",
-            width=14,
-            command=self.mode_live_capture,
-        ).pack(side="left", padx=3)
+                    image_frame,
+                    text="YOLO 세그메테이션",
+                    width=14,
+                    command=self.load_image,
+                ).pack(side="left", padx=3)
 
         self.status_label = tk.Label(
             self.root,
@@ -170,12 +175,9 @@ class DrawingRobotApp:
         )
         self.coordinate_label.pack(padx=10, pady=(2, 5), fill="x")
 
-        robot_x_size = ROBOT_X_MAX - ROBOT_X_MIN
-        robot_y_size = ROBOT_Y_MAX - ROBOT_Y_MIN
-
         self.info_label = tk.Label(
             self.root,
-            text=f"사진 또는 마우스 그림을 {robot_y_size:.0f}mm × {robot_x_size:.0f}mm 영역에 맞춰 그립니다.",
+            text="사진 또는 마우스 그림을 100mm × 100mm 영역에 맞춰 그립니다.",
             anchor="w",
         )
         self.info_label.pack(padx=10, pady=(0, 5), fill="x")
@@ -230,21 +232,16 @@ class DrawingRobotApp:
         self.left_ruler.delete("all")
         self.bottom_ruler.delete("all")
 
-        horizontal_cm = 10.0
-        vertical_cm = 7.5
-
-        for cm in range(11):
-            x = (cm / horizontal_cm) * CANVAS_WIDTH
+        for cm in range(RULER_CM_COUNT + 1):
+            x = (cm / RULER_CM_COUNT) * CANVAS_WIDTH
 
             tick_x = min(x, CANVAS_WIDTH - 1)
-            self.bottom_ruler.create_line(
-                tick_x, 0, tick_x, 9, width=1
-            )
+            self.bottom_ruler.create_line(tick_x, 0, tick_x, 9, width=1)
 
             if cm == 0:
                 text_x = 1
                 anchor = "nw"
-            elif cm == 10:
+            elif cm == RULER_CM_COUNT:
                 text_x = CANVAS_WIDTH - 1
                 anchor = "ne"
             else:
@@ -252,11 +249,7 @@ class DrawingRobotApp:
                 anchor = "n"
 
             self.bottom_ruler.create_text(
-                text_x,
-                14,
-                text=str(cm),
-                anchor=anchor,
-                font=("Arial", 9)
+                text_x, 14, text=str(cm), anchor=anchor, font=("Arial", 9)
             )
 
         self.bottom_ruler.create_text(
@@ -264,53 +257,35 @@ class DrawingRobotApp:
             RULER_BOTTOM_HEIGHT - 1,
             text="cm",
             anchor="s",
-            font=("Arial", 9)
+            font=("Arial", 9),
         )
 
-        step_cm = 1
-        step_count = int(vertical_cm / step_cm)
+        for cm in range(RULER_CM_COUNT + 1):
+            y = CANVAS_HEIGHT - (cm / RULER_CM_COUNT) * CANVAS_HEIGHT
 
-        for i in range(step_count + 1):
-            cm = i * step_cm
 
-            y = CANVAS_HEIGHT - (
-                cm / vertical_cm
-            ) * CANVAS_HEIGHT
-
-            tick_y = max(
-                0,
-                min(CANVAS_HEIGHT - 1, y)
-            )
-
+            tick_y = max(0, min(CANVAS_HEIGHT - 1, y))
             self.left_ruler.create_line(
-                RULER_LEFT_WIDTH - 9,
-                tick_y,
-                RULER_LEFT_WIDTH - 1,
-                tick_y,
-                width=1
+                RULER_LEFT_WIDTH - 9, tick_y, RULER_LEFT_WIDTH - 1, tick_y, width=1
             )
 
-            if i == step_count:
+
+            if cm == RULER_CM_COUNT:
                 text_y = 1
                 anchor = "ne"
-            elif i == 0:
+            elif cm == 0:
                 text_y = CANVAS_HEIGHT - 1
                 anchor = "se"
             else:
                 text_y = y
                 anchor = "e"
 
-            if cm.is_integer():
-                label = str(int(cm))
-            else:
-                label = str(cm)
-
             self.left_ruler.create_text(
                 RULER_LEFT_WIDTH - 13,
                 text_y,
-                text=label,
+                text=str(cm),
                 anchor=anchor,
-                font=("Arial", 9)
+                font=("Arial", 9),
             )
 
         self.left_ruler.create_text(
@@ -318,7 +293,7 @@ class DrawingRobotApp:
             CANVAS_HEIGHT / 2,
             text="cm",
             angle=90,
-            font=("Arial", 9)
+            font=("Arial", 9),
         )
 
 
@@ -442,22 +417,13 @@ class DrawingRobotApp:
             if length < MIN_CONTOUR_LENGTH:
                 continue
 
-            pts = []
-            last_point = None
+            epsilon = max(1.0, CONTOUR_APPROX_RATIO * length)
+            approx = cv2.approxPolyDP(contour, epsilon, False)
 
-            for p in contour:
-                x, y = float(p[0][0]), float(p[0][1])
-
-                if last_point is not None:
-                    if math.hypot(x - last_point[0], y - last_point[1]) < MIN_PIXEL_DISTANCE:
-                        continue
-
-                pts.append((x, y))
-                last_point = (x, y)
-
-            if len(pts) < 2:
+            if len(approx) < 2:
                 continue
 
+            pts = [(float(p[0][0]), float(p[0][1])) for p in approx]
             candidates.append((length, pts))
 
         candidates.sort(key=lambda item: item[0], reverse=True)
@@ -762,7 +728,7 @@ class DrawingRobotApp:
         self.loaded_image_path = None
 
         self.info_label.config(
-            text="사진 또는 마우스 그림을 100mm × 75mm 영역에 맞춰 그립니다."
+            text="사진 또는 마우스 그림을 100mm × 100mm 영역에 맞춰 그립니다."
         )
         self.set_status("화면과 저장된 그림을 지웠습니다.")
 
@@ -1026,9 +992,9 @@ class DrawingRobotApp:
         elapsed = time.monotonic() - start_time
 
         log_file.write(
-            f"{elapsed:.2f}\t{x:.2f}\t{y:.2f}\t{z:.2f}\t"
-            f"{current_x:.2f}\t{current_y:.2f}\t{current_z:.2f}\t"
-            f"{error_x:.2f}\t{error_y:.2f}\t{error_z:.2f}\n"
+            f"{elapsed:.3f}\t{x:.3f}\t{y:.3f}\t{z:.3f}\t"
+            f"{current_x:.3f}\t{current_y:.3f}\t{current_z:.3f}\t"
+            f"{error_x:.3f}\t{error_y:.3f}\t{error_z:.3f}\n"
         )
         log_file.flush()
 
@@ -1098,7 +1064,7 @@ class DrawingRobotApp:
             self.reset_live_position()
 
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            filename = time.strftime("C:/Users/SAMSUNG/OneDrive/바탕 화면/로봇/참고자료/measure.txt")
+            filename = time.strftime("coordinate_measurement_%Y%m%d_%H%M%S.txt")
             log_path = os.path.join(base_dir, filename)
 
             strokes_copy = [stroke.copy() for stroke in self.strokes]
@@ -1241,136 +1207,6 @@ class DrawingRobotApp:
 
         self.root.destroy()
 
-    
-
-    def mode_live_capture(self):
-        pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-        try:
-            pipeline.start(config)
-        except RuntimeError:
-                    messagebox.showwarning(
-                        "카메라 연결 오류",
-                        "RealSense 카메라가 연결되어 있지 않습니다.\n"
-                        "카메라 연결 상태를 확인해주세요."
-                    )
-                    self.set_status("RealSense 카메라 연결 실패")
-                    return
-        time.sleep(1)
-
-        for _ in range(5): frames = pipeline.wait_for_frames()
-    
-        color_frame = frames.get_color_frame()
-        if color_frame:
-            test_image = np.asanyarray(color_frame.get_data())
-            h, w = test_image.shape[:2]
-            if w != 640 or h != 480: print("설정된 해상도가 640x480과 다릅니다")
-
-
-        try:
-            while True:
-                frames = pipeline.wait_for_frames()
-                color_frame = frames.get_color_frame()
-                if not color_frame: continue
-            
-                color_image = np.asanyarray(color_frame.get_data())
-                paths = extract_paths_from_image(color_image)
-                display_img = color_image.copy()
-            
-                for path in paths:
-                    pts = np.array(path, np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(display_img, [pts], isClosed=True, color=(0, 255, 0), thickness=2)
-                
-                cv2.putText(display_img, "Press ENTER to Save, ESC to Exit", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                cv2.imshow("Live Capture Mode", display_img)
-
-                key = cv2.waitKey(1)
-                if key == 13:
-                    if not paths:
-                        print("추출된 윤곽선이 없습니다.")
-                        continue
-
-                    strokes = []
-
-                    for path in paths:
-                        stroke = []
-
-                        for x, y in path:
-                            stroke.append((x, y))
-
-                        if len(stroke) >= 2:
-                            strokes.append(stroke)
-
-                    self.strokes = strokes
-
-
-                    self.redraw_strokes()
-
-                    total_points = sum(
-                        len(stroke) for stroke in self.strokes
-                    )
-
-                    self.info_label.config(
-                        text=(
-                            f"YOLO 세그멘테이션 | "
-                            f"선 {len(self.strokes)}개 | "
-                            f"좌표 {total_points}개"
-                        )
-                    )
-
-                    self.set_status(
-                        f"YOLO 윤곽선 저장 완료: "
-                        f"{len(self.strokes)}개 선, "
-                        f"{total_points}개 좌표"
-                    )
-
-                    cv2.imwrite(SAVE_FILENAME, color_image)
-                    break
-
-                elif key == 27: break
-        finally:
-            pipeline.stop()
-            cv2.destroyAllWindows()
-
-def extract_paths_from_image(image, conf=0.1):
-    model = YOLO("yolov8n-seg.pt")
-    results = model(image, conf=conf, verbose=False)
-
-    all_paths = []
-
-    if results[0].masks is not None:
-        masks = results[0].masks.data.cpu().numpy()
-
-        for mask in masks:
-            mask = (mask * 255).astype(np.uint8)
-
-            contours, _ = cv2.findContours(
-                mask,
-                cv2.RETR_EXTERNAL,
-                cv2.CHAIN_APPROX_NONE
-            )
-
-            for cnt in contours:
-                path = []
-                last_point = None
-
-                for point in cnt:
-                    x, y = float(point[0][0]), float(point[0][1])
-
-                    if last_point is not None:
-                        if math.hypot(x - last_point[0], y - last_point[1]) < MIN_PIXEL_DISTANCE:
-                            continue
-
-                    path.append((x, y))
-                    last_point = (x, y)
-
-                if len(path) >= 2:
-                    all_paths.append(path)
-
-    return all_paths
-    
 
 def main():
     root = tk.Tk()
