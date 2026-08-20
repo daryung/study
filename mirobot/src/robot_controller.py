@@ -1,5 +1,4 @@
 import time
-
 import serial
 import wlkatapython
 
@@ -12,6 +11,15 @@ class RobotController:
         self.robot = None
         self.connected = False
 
+    def custom_tool_offset(self, x, y, z):
+        msg = (
+            '$46=' + str(x) + '\n'
+            '$47=' + str(y) + '\n'
+            '$48=' + str(z)
+        )
+
+        self.robot.sendMsg(msg)
+
     def connect(self):
         if self.connected:
             return
@@ -22,7 +30,9 @@ class RobotController:
         self.robot = wlkatapython.Wlkata_UART()
         self.robot.init(self.serial, ROBOT_ADDRESS)
         self.robot.speed(ROBOT_SPEED)
+        self.custom_tool_offset(35, 0, 120)
         self.connected = True
+        
 
     def homing(self):
         self.robot.homing()
